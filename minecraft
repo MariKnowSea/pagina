@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Jogo inspirado em Minecraft — Mini Sandbox</title>
+  <style>
+    :root{--bg:#88c0d0}
+    html,body{height:100%;margin:0;font-family:Inter, system-ui, Arial}
+    body{display:flex;align-items:center;justify-content:center;background:linear-gradient(180deg,#7fb3c9,#cfeef7);}
+    .wrap{width:960px;background:#0f1720;border-radius:12px;box-shadow:0 8px 30px rgba(2,6,23,.6);overflow:hidden;color:#e6eef6}
+    header{display:flex;align-items:center;gap:16px;padding:12px 16px;background:#071028}
+    header h1{font-size:16px;margin:0}
+    #canvas{background:linear-gradient(#87ceeb,#bfe8ff);display:block}
+    .sidebar{display:flex;flex-direction:column;padding:12px;gap:10px;width:260px;background:#071923}
+    .container{display:flex}
+    .controls{font-size:13px;color:#cfe7f2}
+    .palette{display:flex;gap:8px}
+    .block-btn{width:44px;height:44px;border-radius:6px;border:2px solid transparent;display:flex;align-items:center;justify-content:center;cursor:pointer}
+    .block-btn.selected{outline:3px solid #ffd47a}
+    .btn{background:#0b1320;border:1px solid rgba(255,255,255,.03);padding:6px 8px;border-radius:6px;color:#dfeff8;cursor:pointer}
+    footer{padding:8px 12px;background:#071028;font-size:13px}
+    .hud{position:absolute;left:16px;top:86px;color:#051019;background:rgba(255,255,255,0.8);padding:6px 10px;border-radius:6px}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <header>
+      <h1>MiniMinecraft — Sandbox 2D</h1>
+      <div style="flex:1"></div>
+      <div style="font-size:13px;color:#9fd3ff">Clique: colocar | Clique direito: remover</div>
+    </header>
+
+    <div class="container">
+      <canvas id="canvas" width="700" height="560"></canvas>
+
+      <div class="sidebar">
+        <div class="controls">
+          <div style="margin-bottom:8px;color:#cfe7f2">Paleta de blocos</div>
+          <div class="palette" id="palette"></div>
+
+          <div style="margin-top:12px">
+            <div class="btn" id="saveBtn">Salvar (export JSON)</div>
+          </div>
+
+          <div style="margin-top:12px;color:#cfe7f2">
+            Controles:
+            <ul style="margin:6px 0 0 16px;padding:0">
+              <li>← → : mover</li>
+              <li>↑  / Espaço: pular</li>
+              <li>1..4 : selecionar bloco</li>
+              <li>Clique esquerdo: colocar</li>
+              <li>Clique direito: remover</li>
+            </ul>
+          </div>
+
+        </div>
+      </div>
+    </div>
+
+    <footer>Projeto de exemplo — sinta-se livre para editar os blocos e regras.</footer>
+  </div>
+
+  <script>
+    // Configurações
+    const canvas = document.getElementById('canvas');
+    const ctx = canvas.getContext('2d');
+    const TILE = 32; // tamanho do bloco em pixels
+    const COLS = Math.floor(canvas.width / TILE);
+    const ROWS = Math.floor(canvas.height / TILE);
+
+    // Tipos de blocos
+    const BLOCKS = [
+      {id:0,name:'vazio',color:null},
+      {id:1,name:'grama',color:'#6bbf59'},
+      {id:2,name:'terra',color:'#b06e3b'},
+      {id:3,name:'pedra',color:'#8a8f96'},
+      {id:4,name:'madeira',color:'#a46b2a'}
+    ];
+
+    // Mundo: matriz ROWS x COLS
+    let world = Array.from({length:ROWS},()=>Array(COLS).fill(0));
+
+    // Preencher com um chão simples
+    for(let r=ROWS-4;r<ROWS;r++){
+      for(let c=0;c<COLS;c++) world[r][c] = (r===ROWS-4)?1:2; // camada de grama + terra
+    }
+
+    // Jogador
+    const player = {
+      x: TILE*4 + 4,
+      y: TILE*(ROWS-6),
+      w: TILE-8,
+      h: TILE-4,
+      vx:0,vy:0,
+      onGround:false
+    };
+
+    // Física
+    const GRAVITY = 0.8;
+    const FRICTION = 0.85;
+
+    // Estado de entrada
+    const keys = {};
+
+    // Ferramentas
+    let selectedBlock = 1;
+
+    // HUD / palette
+    const paletteEl = document.getElementById('palette');
+    function buildPalette(){
+      BLOCKS.slice(1).forEach(b=>{
+        const btn = document.createElement('div');
+        btn.className = 'block-btn';
+        btn.title = b.name;
+        btn.dataset.id = b.id;
+        btn.innerText = '';
+        btn.style.background = b.color;
+        btn.addEventListener('click', ()=>{ selectBlock(b.id); });
+        paletteEl.appendChild(btn);
+      });
+      updatePalette();
+    }
+    function selectBlock(id){ selectedBlock = id; updatePalette(); }
+    function updatePalette(){
+      document.querySelectorAll('.block-btn').forEach(btn=>{
+        btn.classList.toggle('selected', Number(btn.dataset.id) === selectedBlock);
+      });
+    }
+
+    // Render
+    function draw(){
+      ctx.clearRect(0,0,canvas.width,canvas.height);
+
+      // draw sky background subtle grid
+      for(let r=0;r<ROWS;r++){
+        for(let c=0;c<COLS;c++){
+          const id = world[r][c];
+          if(id!==0){
+            ctx.fillStyle = BLOCKS.find(b=>b.id===id).color;
+            ctx.fillRect(c*TILE, r*TILE, TILE, TILE);
+            ctx.strokeStyle = 'rgba(0,0,0,0.08)';
+            ctx.strokeRect(c*TILE, r*TILE, TILE, TILE);
+          }
+        }
+      }
+
+      // player
+      ctx.fillStyle = '#0a2540';
+      ctx.fillRect(player.x, player.y, player.w, player.h);
+      // eyes
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(player.x + 6, player.y + 6, 4, 4);
+      ctx.fillRect(player.x + 16, player.y + 6, 4, 4);
+
+      // grid guides
+      ctx.strokeStyle = 'rgba(255,255,255,0.03)';
+      for(let x=TILE;x<canvas.width;x+=TILE){ ctx.beginPath(); ctx.moveTo(x,0); ctx.lineTo(x,canvas.height); ctx.stroke(); }
+      for(let y=TILE;y<canvas.height;y+=TILE){ ctx.beginPath(); ctx.moveTo(0,y); ctx.lineTo(canvas.width,y); ctx.stroke(); }
+
+      // HUD: bloco selecionado
+      ctx.fillStyle = 'rgba(255,255,255,0.9)';
+      ctx.fillRect(8,8,120,28);
+      ctx.fillStyle = '#051019';
+      ctx.font = '14px sans-serif';
+      ctx.fillText('Bloco: ' + BLOCKS.find(b=>b.id===selectedBlock).name, 16, 26);
+    }
+
+    // Colisão bloco por bloco
+    function tileAt(x,y){
+      const c = Math.floor(x / TILE);
+      const r = Math.floor(y / TILE);
+      if(r<0||r>=ROWS||c<0||c>=COLS) return 0;
+      return world[r][c];
+    }
+
+    function setTileAtScreen(px,py,id){
+      const c = Math.floor(px / TILE);
+      const r = Math.floor(py / TILE);
+      if(r<0||r>=ROWS||c<0||c>=COLS) return;
+      world[r][c] = id;
+    }
+
+    function collide(x,y,w,h){
+      // check corners
+      const left = x;
+      const right = x+w-1;
+      const top = y;
+      const bottom = y+h-1;
+      return (tileAt(left,top) || tileAt(right,top) || tileAt(left,bottom) || tileAt(right,bottom));
+    }
+
+    // Update loop
+    function update(){
+      // inputs
+      if(keys['ArrowLeft']) player.vx = -3;
+      else if(keys['ArrowRight']) player.vx = 3;
+      else player.vx *= FRICTION;
+
+      // gravity
+      player.vy += GRAVITY;
+      if(player.vy > 12) player.vy = 12;
+
+      // horizontal move & collision
+      player.x += player.vx;
+      if(collide(player.x, player.y, player.w, player.h)){
+        // collide horizontally: step back
+        player.x -= player.vx;
+        player.vx = 0;
+      }
+
+      // vertical move & collision
+      player.y += player.vy;
+      if(collide(player.x, player.y, player.w, player.h)){
+        // landed or hit head
+        player.y -= player.vy;
+        if(player.vy > 0){ player.onGround = true; }
+        player.vy = 0;
+      } else {
+        player.onGround = false;
+      }
+
+      // simple bounds
+      if(player.x < 0) player.x = 0;
+      if(player.x + player.w > canvas.width) player.x = canvas.width - player.w;
+      if(player.y + player.h > canvas.height) { player.y = canvas.height - player.h; player.onGround = true; player.vy = 0; }
+
+      draw();
+      requestAnimationFrame(update);
+    }
+
+    // Eventos de teclado
+    window.addEventListener('keydown', (e)=>{
+      keys[e.key] = true;
+      if(e.key === 'ArrowUp' || e.key === ' '){
+        if(player.onGround){ player.vy = -12; player.onGround = false; }
+        e.preventDefault();
+      }
+      // selecionar blocos com 1..4
+      if(/^[1-4]$/.test(e.key)){
+        const id = Number(e.key);
+        if(BLOCKS.some(b=>b.id===id)) selectBlock(id);
+      }
+    });
+    window.addEventListener('keyup', (e)=>{ keys[e.key] = false; });
+
+    // Mouse para colocar/remover blocos
+    canvas.addEventListener('contextmenu', (e)=> e.preventDefault());
+    canvas.addEventListener('mousedown', (e)=>{
+      const rect = canvas.getBoundingClientRect();
+      const mx = e.clientX - rect.left;
+      const my = e.clientY - rect.top;
+      if(e.button === 0){ // esquerdo: colocar
+        setTileAtScreen(mx, my, selectedBlock);
+      } else if(e.button === 2){ // direito: remover
+        setTileAtScreen(mx, my, 0);
+      }
+      draw();
+    });
+
+    // salvar mundo
+    document.getElementById('saveBtn').addEventListener('click', ()=>{
+      const data = {rows:ROWS,cols:COLS,tile:TILE,world};
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([JSON.stringify(data, null, 2)], {type:'application/json'}));
+      a.download = 'mundo.json';
+      a.click();
+    });
+
+    // inicializar
+    buildPalette();
+    update();
+
+  </script>
+</body>
+</html>
